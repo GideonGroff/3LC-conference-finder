@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from agent import find_conferences, get_secret
 from excel_export import generate_excel
+from demo_data import DEMO_CONFERENCES
 
 load_dotenv()
 
@@ -103,6 +104,14 @@ with st.sidebar:
 
     st.markdown("---")
 
+    st.markdown("---")
+    st.markdown("### Mode")
+    demo_mode = st.toggle("Demo Mode (no API key needed)", value=True)
+    if demo_mode:
+        st.info("Using pre-loaded sample data.")
+    else:
+        st.caption("Requires Gemini + Tavily API keys in .env")
+
     # Search button
     search_clicked = st.button(
         "🚀 Find Conferences",
@@ -124,13 +133,16 @@ st.markdown(
 )
 
 # ── API key check ─────────────────────────────────────────────────────────────
-anthropic_key = get_secret("ANTHROPIC_API_KEY")
+gemini_key = get_secret("GEMINI_API_KEY")
 tavily_key = get_secret("TAVILY_API_KEY")
 
-if not anthropic_key or not tavily_key:
+if not gemini_key or not tavily_key:
     st.error(
         "⚠️ Missing API keys. Create a `.env` file with:\n"
-        "```\nANTHROPIC_API_KEY=your_key\nTAVILY_API_KEY=your_key\n```"
+        "```\nGEMINI_API_KEY=your_key\nTAVILY_API_KEY=your_key\n```\n\n"
+        "Both are **free**:\n"
+        "- Gemini: https://aistudio.google.com → Get API key\n"
+        "- Tavily: https://app.tavily.com → Dashboard"
     )
     st.stop()
 
@@ -155,33 +167,38 @@ if search_clicked:
     }
     st.session_state.search_filters = filters
 
-    status_messages = []
+    if demo_mode:
+        # Filter demo data by selected industries
+        filtered = [
+            c for c in DEMO_CONFERENCES
+            if any(ind.lower().split("/")[0].strip() in c["industry"].lower()
+                   for ind in selected_industries)
+        ] or DEMO_CONFERENCES
+        st.session_state.conferences = filtered
+        st.success(f"✅ Found {len(filtered)} conferences! (Demo Mode)")
+    else:
+        with st.status("🔍 Researching conferences...", expanded=True) as status:
+            st.write("Starting AI-powered conference research...")
 
-    with st.status("🔍 Researching conferences...", expanded=True) as status:
-        st.write("Starting AI-powered conference research...")
-        st.write(f"Industries: {', '.join(selected_industries)}")
-        st.write(f"Date range: {date_range} | Min size: {min_size}+ companies")
+            def update_status(msg: str):
+                st.write(msg)
 
-        def update_status(msg: str):
-            st.write(msg)
-            status_messages.append(msg)
-
-        try:
-            conferences = find_conferences(
-                industries=selected_industries,
-                date_range=date_range,
-                min_size=min_size,
-                regions=selected_regions,
-                status_callback=update_status
-            )
-            st.session_state.conferences = conferences
-            status.update(
-                label=f"✅ Found {len(conferences)} conferences!",
-                state="complete"
-            )
-        except Exception as e:
-            status.update(label=f"❌ Error: {str(e)}", state="error")
-            st.error(f"Research failed: {str(e)}")
+            try:
+                conferences = find_conferences(
+                    industries=selected_industries,
+                    date_range=date_range,
+                    min_size=min_size,
+                    regions=selected_regions,
+                    status_callback=update_status
+                )
+                st.session_state.conferences = conferences
+                status.update(
+                    label=f"✅ Found {len(conferences)} conferences!",
+                    state="complete"
+                )
+            except Exception as e:
+                status.update(label=f"❌ Error: {str(e)}", state="error")
+                st.error(f"Research failed: {str(e)}")
 
     st.session_state.searching = False
 

@@ -1,12 +1,11 @@
 """
 3LC Conference Finder Agent
-Uses Claude Opus 4.7 + Tavily to research US conferences for 3LC.ai
+Uses Google Gemini (free) + Tavily to research US conferences for 3LC.ai
 """
 
 import json
 import os
-from typing import Generator
-import anthropic
+from google import genai
 from tavily import TavilyClient
 from dotenv import load_dotenv
 
@@ -21,237 +20,122 @@ def get_secret(key: str) -> str:
     except Exception:
         return os.getenv(key, "")
 
-# Tool definition for Tavily web search
-TOOLS = [
-    {
-        "name": "web_search",
-        "description": (
-            "Search the web for information about conferences, trade shows, industry events, "
-            "and company attendee lists. Use this to find upcoming US conferences and "
-            "research which companies will be attending them."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query. Be specific and include year (2025 or 2026)."
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Number of results to return (1-8). Default 5.",
-                    "default": 5
-                }
-            },
-            "required": ["query"]
-        }
-    }
-]
 
 SYSTEM_PROMPT = """You are a conference research specialist for 3LC.ai, a visual data AI compression company.
 
-Your mission: Find US conferences in 2025-2026 where 3LC.ai can network and discover new enterprise clients.
+3LC.ai's ideal client: companies with 500+ employees working with visual data, AI/ML, or computer vision.
+Target industries: robotics, agriculture, automotive, retail, manufacturing, logistics, aerospace, media.
 
-3LC.ai's ideal client profile:
-- Companies with 500+ total employees
-- Companies that work with visual data, AI/ML, computer vision, or large datasets
-- Target industries: robotics, agriculture, automotive, retail, manufacturing, logistics, aerospace, healthcare imaging, media & entertainment
-
-Search strategy:
-1. Search for major conferences in each target industry (e.g., "robotics conference USA 2025", "agricultural technology conference 2025")
-2. For each promising conference, search for the attendee/exhibitor list to identify qualifying companies
-3. Focus on enterprise-level events where Fortune 1000 companies and large enterprises attend
-
-For each conference, gather:
-- Conference name
-- Location (city, state)
-- Date or date range
-- Primary industry focus
-- Companies of interest attending (500+ employee companies in visual data/AI/ML space). If unknown, write "Unknown"
-- Estimated conference size (number of companies/organizations attending)
-
-After thorough research, output ONLY a JSON array with this exact structure (no other text):
+From the search results provided, extract US conferences and output ONLY a JSON array:
 [
   {
     "conference_name": "string",
-    "location": "string",
+    "location": "City, State",
     "date": "string",
     "industry": "string",
-    "companies_of_interest": "string",
-    "conference_size": "string"
+    "companies_of_interest": "company1, company2 (500+ employee companies attending, or 'Unknown')",
+    "conference_size": "e.g. '500+ companies' or 'Unknown'"
   }
 ]
+No other text. Only the JSON array."""
 
-Aim to find 8-15 high-quality conferences. Quality over quantity — focus on large conferences where enterprise companies with visual data needs will be present."""
 
-
-def run_web_search(query: str, max_results: int = 5) -> str:
-    """Execute a Tavily web search and return results as JSON string."""
+def search_web(query: str, max_results: int = 4) -> str:
+    """Search the web using Tavily."""
     api_key = get_secret("TAVILY_API_KEY")
     if not api_key:
         return json.dumps({"error": "TAVILY_API_KEY not set"})
-
     try:
         tavily = TavilyClient(api_key=api_key)
-        response = tavily.search(
-            query=query,
-            max_results=max_results,
-            search_depth="advanced"
-        )
-        # Return cleaned results
+        response = tavily.search(query=query, max_results=max_results)
         results = []
         for r in response.get("results", []):
             results.append({
                 "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "content": r.get("content", "")[:800]  # Truncate for context efficiency
+                "content": r.get("content", "")[:500]
             })
-        return json.dumps(results, indent=2)
+        return json.dumps(results)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
 
-def build_user_prompt(industries: list[str], date_range: str, min_size: int, regions: list[str]) -> str:
-    """Build a targeted user prompt based on UI filters."""
-    industries_str = ", ".join(industries) if industries else "robotics, agriculture, automotive, retail, AI/ML"
-    regions_str = ", ".join(regions) if regions else "United States (all regions)"
-
-    return f"""Find US conferences for 3LC.ai with these filters:
-
-Target Industries: {industries_str}
-Date Range: {date_range}
-Minimum Conference Size: {min_size}+ companies attending
-Geographic Focus: {regions_str}
-
-Search for conferences in each specified industry. For each conference you find, search for the exhibitor/attendee list to identify companies with 500+ employees that work with visual data or AI/ML.
-
-Remember to output ONLY the JSON array at the end."""
-
-
 def find_conferences(
-    industries: list[str],
+    industries: list,
     date_range: str,
     min_size: int,
-    regions: list[str],
+    regions: list,
     status_callback=None
-) -> list[dict]:
-    """
-    Run the Claude agent to find conferences matching 3LC's criteria.
+) -> list:
+    """Use Gemini + Tavily to find conferences matching 3LC's criteria."""
+    api_key = get_secret("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set. Get a free key at aistudio.google.com")
 
-    Args:
-        industries: List of target industries
-        date_range: Date range string (e.g., "2025-2026")
-        min_size: Minimum conference size (number of companies)
-        regions: List of US regions to focus on
-        status_callback: Optional function(message: str) called for progress updates
-
-    Returns:
-        List of conference dicts with keys: conference_name, location, date,
-        industry, companies_of_interest, conference_size
-    """
-    client = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-
-    messages = [
-        {
-            "role": "user",
-            "content": build_user_prompt(industries, date_range, min_size, regions)
-        }
-    ]
+    client = genai.Client(api_key=api_key)
+    industries_str = ", ".join(industries[:4])  # Limit to 4 industries
 
     if status_callback:
-        status_callback("Starting conference research with Claude Opus 4.7...")
+        status_callback("Searching for conferences...")
 
-    # Agentic tool-use loop
-    while True:
-        response = client.messages.create(
-            model="claude-opus-4-7",
-            max_tokens=8000,
-            thinking={"type": "adaptive"},
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages
+    # Run targeted searches
+    all_results = []
+    queries = [
+        f"{industries_str} conference expo USA {date_range}",
+        f"enterprise {industries_str} trade show United States 2025 2026 exhibitors",
+    ]
+
+    for query in queries:
+        if status_callback:
+            status_callback(f"Searching: {query[:55]}...")
+        results = search_web(query, max_results=4)
+        all_results.append(f"Search: {query}\n{results}")
+
+    if status_callback:
+        status_callback("Analyzing with Gemini AI...")
+
+    combined = "\n\n".join(all_results)[:6000]  # Keep under token limit
+
+    prompt = f"""Find US conferences for a company targeting {industries_str} industries in {date_range}.
+Minimum conference size: {min_size}+ companies.
+Regions: {', '.join(regions) if regions else 'All US'}.
+
+Search results:
+{combined}
+
+Output ONLY the JSON array of conferences found."""
+
+    response = client.models.generate_content(
+        model="gemini-2.0-flash-lite",
+        contents=prompt,
+        config=genai.types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.1,
         )
+    )
 
-        # Check stop reason
-        if response.stop_reason == "end_turn":
-            # Extract the JSON from the final text response
-            for block in response.content:
-                if block.type == "text":
-                    return _parse_json_response(block.text)
-            return []
-
-        if response.stop_reason != "tool_use":
-            break
-
-        # Process tool calls
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                tool_name = block.name
-                tool_input = block.input
-
-                if status_callback:
-                    query_preview = tool_input.get("query", "")[:60]
-                    status_callback(f"Searching: {query_preview}...")
-
-                if tool_name == "web_search":
-                    result = run_web_search(
-                        query=tool_input["query"],
-                        max_results=tool_input.get("max_results", 5)
-                    )
-                else:
-                    result = json.dumps({"error": f"Unknown tool: {tool_name}"})
-
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result
-                })
-
-        # Append assistant response and tool results to messages
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": tool_results})
-
-    return []
+    return _parse_json_response(response.text)
 
 
-def find_conferences_streaming(
-    industries: list[str],
-    date_range: str,
-    min_size: int,
-    regions: list[str]
-) -> Generator[str, None, list[dict]]:
-    """
-    Generator version that yields status messages during research.
-    Yields strings for status updates, returns final list of conferences.
-    """
-    results = []
+def _parse_json_response(text: str) -> list:
+    """Extract and parse JSON array from Gemini's response."""
+    if not text:
+        return []
 
-    def collect_status(msg: str):
-        pass  # Will be replaced by caller
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
 
-    # Use the regular function with a callback
-    # For Streamlit, we'll use the non-streaming version with st.status
-    return find_conferences(industries, date_range, min_size, regions)
-
-
-def _parse_json_response(text: str) -> list[dict]:
-    """Extract and parse JSON array from Claude's response."""
     text = text.strip()
-
-    # Try to find JSON array in the response
     start = text.find("[")
     end = text.rfind("]") + 1
 
     if start == -1 or end == 0:
         return []
 
-    json_str = text[start:end]
-
     try:
-        data = json.loads(json_str)
+        data = json.loads(text[start:end])
         if isinstance(data, list):
-            # Normalize keys
             normalized = []
             for item in data:
                 if isinstance(item, dict):
