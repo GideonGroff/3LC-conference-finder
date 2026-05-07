@@ -132,19 +132,9 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ── API key check ─────────────────────────────────────────────────────────────
+# ── API key check (only required when not in demo mode) ───────────────────────
 gemini_key = get_secret("GEMINI_API_KEY")
 tavily_key = get_secret("TAVILY_API_KEY")
-
-if not gemini_key or not tavily_key:
-    st.error(
-        "⚠️ Missing API keys. Create a `.env` file with:\n"
-        "```\nGEMINI_API_KEY=your_key\nTAVILY_API_KEY=your_key\n```\n\n"
-        "Both are **free**:\n"
-        "- Gemini: https://aistudio.google.com → Get API key\n"
-        "- Tavily: https://app.tavily.com → Dashboard"
-    )
-    st.stop()
 
 # ── Results state ─────────────────────────────────────────────────────────────
 if "conferences" not in st.session_state:
@@ -183,6 +173,9 @@ if search_clicked:
             def update_status(msg: str):
                 st.write(msg)
 
+            if not gemini_key or not tavily_key:
+                st.error("⚠️ API keys required for live search. Add GEMINI_API_KEY and TAVILY_API_KEY, or use Demo Mode.")
+                st.stop()
             try:
                 conferences = find_conferences(
                     industries=selected_industries,
